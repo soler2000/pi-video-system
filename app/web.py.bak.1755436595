@@ -2,7 +2,7 @@ import time, subprocess
 import psutil
 from flask import Flask, render_template, request, jsonify
 
-from .config import get_config, save_config
+from .config import get_config
 from .camera import CameraSupervisor
 from .battery import BatteryReader
 from .distance import DistanceReader
@@ -92,37 +92,13 @@ def stats():
         "ts": time.time()
     })
 
-def _persist_led_to_cfg():
-    # write current LED settings back to config.yaml
-    c = get_config()
-    c.setdefault("led", {})
-    c["led"]["enabled"] = bool(led.enabled)
-    c["led"]["brightness"] = float(led.brightness)
-    c["led"]["anim"] = str(led.anim)
-    c["led"]["speed"] = float(getattr(led, "_speed", 10.0))
-    c["led"]["color"] = str(getattr(led, "color_hex", "#FFFFFF"))
-    save_config(c)
-
-@app.route("/api/led/state")
-def led_state():
-    return {
-        "enabled": bool(led.enabled),
-        "brightness": float(led.brightness),
-        "anim": str(led.anim),
-        "speed": float(getattr(led, "_speed", 10.0)),
-        "color": str(getattr(led, "color_hex", "#FFFFFF")),
-    }
-
 @app.route("/api/led/apply", methods=["POST"])
 def led_apply():
     data = request.get_json(force=True, silent=True) or {}
-    if "enabled" in data: led.set_enabled(bool(data["enabled"]))
     if "brightness" in data: led.set_brightness(float(data["brightness"]))
     if "speed" in data: led.set_speed(float(data["speed"]))
-    if "color" in data: led.set_color(str(data["color"]))
     if "anim" in data: led.anim = str(data["anim"])
-    _persist_led_to_cfg()
-    return {"ok": True, **led_state()}
+    return {"ok": True, "anim": led.anim}
 
 @app.route("/api/debug/distance")
 def _dbg_dist():
