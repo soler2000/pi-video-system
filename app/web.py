@@ -78,6 +78,18 @@ def stats():
     hls_url = f"http://{host}:8888/reversing/index.m3u8"
     t0=time.perf_counter(); mm = dist.read_mm(); read_ms=int(round((time.perf_counter()-t0)*1000))
     stats.__dict__.setdefault("SEQ",0); stats.__dict__["SEQ"] += 1
+    # --- Add meters (with >4.0 clamp) ---
+    m = None
+    if resp.get("distance_cm") is not None:
+        try:
+            mval = float(resp["distance_cm"]) / 100.0
+            m = mval if mval <= 4.0 else ">4.0"
+        except Exception:
+            m = None
+    resp["distance_m"] = m
+    # ------------------------------------
+    
+    
     return jsonify({
         "seq": stats.__dict__["SEQ"],
         "cpu_temp": cpu_temp(),
