@@ -1,156 +1,206 @@
-import time, subprocess
-import psutil
-from flask import Flask, render_template, request, jsonify
+from __future__ import annotations
+import os, time, subprocess
+from flask import Flask, render_template, jsonify, request
 
-from .config import get_config, save_config
-from .camera import CameraSupervisor
-from .battery import BatteryReader
-from .distance import DistanceReader
-from .led import LedRing
+try:
+    from . import battery
+except Exception:
+    battery = None
+try:
+    from . import distance
+except Exception:
+    distance = None
+try:
+    from . import led
+except Exception:
+    led = None
+try:
+    from . import camera
+except Exception:
+    camera = None
 
-app = Flask(__name__, static_folder="static", template_folder="templates")
+app = Flask(__name__, template_folder="templates", static_folder="static")
 
-cfg = get_config()
-cam = CameraSupervisor()
-bat = BatteryReader(cfg)
-dist = DistanceReader(cfg)
-led = LedRing(cfg); led.start()
-
-@app.after_request
-def _nocache(resp):
-    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-    resp.headers["Pragma"] = "no-cache"
-    resp.headers["Expires"] = "0"
-    return resp
-
-_autostart_done=False
-@app.before_request
-def _auto_start_once():
-    global _autostart_done
-    if _autostart_done: return
-    try: cam.start("reversing")
-    except Exception as e: print("[AutoStart] failed:", e)
-    _autostart_done=True
-
-def cpu_temp():
+def _cpu_temp():
     try:
-        with open("/sys/class/thermal/thermal_zone0/temp") as f: return round(int(f.read().strip())/1000.0,1)
-    except Exception: return None
+        with open("/sys/class/thermal/thermal_zone0/temp") as f:
+            return round(int(f.read().strip())/1000.0, 1)
+    except Exception:
+        return None
 
-def wifi_dbm():
+def _cpu_load():
     try:
-        out = subprocess.check_output("iw dev wlan0 link", shell=True, text=True)
+        import psutil
+        return psutil.cpu_percent(interval=0)
+    except Exception:
+        return None
+
+def _wifi_dbm():
+    try:
+        out = subprocess.check_output(["/usr/sbin/iwconfig"], stderr=subprocess.STDOUT, text=True, timeout=1.5)
         for line in out.splitlines():
-            if "signal:" in line: return int(line.split()[1])
-    except Exception: return None
+            if "Signal level=" in line:
+                part = line.split("Signal level=")[1]
+                return int(part.split()[0])
+    except Exception:
+        pass
     return None
 
-def _distance_warn_hz():
-    dcfg = cfg.get("distance",{})
-    min_cm=float(dcfg.get("min_cm",10)); max_cm=float(dcfg.get("max_cm",150))
-    fmin=float(dcfg.get("warn_freq_min_hz",1)); fmax=float(dcfg.get("warn_freq_max_hz",20))
-    mm = dist.read_mm()
-    if mm is None: return None
-    cm = mm/10.0
-    if cm <= min_cm: hz=fmax
-    elif cm >= max_cm: hz=fmin
-    else:
-        ratio=(max_cm - cm)/max(1e-6,(max_cm-min_cm))
-        hz = fmin + (fmax - fmin)*ratio
-    return round(hz,2)
+@app.after_request
+def _api_no_cache(resp):
+    try:
+        if request.path.startswith("/api/"):
+            resp.headers["Cache-Control"] = "no-store, max-age=0"
+            resp.headers["Pragma"] = "no-cache"
+            resp.headers["Expires"] = "0"
+    except Exception:
+        pass
+    return resp
 
 @app.route("/")
-def root(): return render_template("dashboard.html")
+def index():
+    return render_template("dashboard.html")
 
 @app.route("/reverse")
-def reverse(): return render_template("reverse.html")
+def reverse():
+    return render_template("reverse.html")
 
 @app.route("/settings/led")
-def settings_led(): return render_template("settings_led.html")
+def settings_led():
+    return render_template("settings_led.html")
 
 @app.route("/api/stats")
-def stats():
-    if getattr(led, "anim", "") == "distance_warn":
-        hz = _distance_warn_hz()
-        if hz: led.set_warn_hz(hz)
-    b = bat.read()
+def api_stats():
     host = request.host.split(":")[0]
-    hls_url = f"http://{host}:8888/reversing/index.m3u8"
-    t0=time.perf_counter(); mm = dist.read_mm(); read_ms=int(round((time.perf_counter()-t0)*1000))
-    stats.__dict__.setdefault("SEQ",0); stats.__dict__["SEQ"] += 1
-    # --- Add meters (with >4.0 clamp) ---
-    m = None
-    if resp.get("distance_cm") is not None:
-        try:
-            mval = float(resp["distance_cm"]) / 100.0
-            m = mval if mval <= 4.0 else ">4.0"
-        except Exception:
-            m = None
-    resp["distance_m"] = m
-    # ------------------------------------
-    
-    
-    return jsonify({
-        "seq": stats.__dict__["SEQ"],
-        "cpu_temp": cpu_temp(),
-        "cpu_load": psutil.cpu_percent(interval=0),
-        "wifi_dbm": wifi_dbm(),
-        "battery": b,
-        "distance_mm": mm,
-        "distance_cm": (None if mm is None else round(mm/10.0,1)),
-        "read_ms": read_ms,
-        "hls": hls_url,
+    data = {
+        "ts": time.time(),
+        "cpu_temp": _cpu_temp(),
+        "cpu_load": _cpu_load(),
+        "wifi_dbm": _wifi_dbm(),
+        "battery": None,
+        "distance_mm": None,
+        "distance_cm": None,
+        "distance_m": None,
+        "hls": f"http://{host}:8888/reversing/index.m3u8",
         "show_latency": True,
-        "ts": time.time()
-    })
-
-def _persist_led_to_cfg():
-    # write current LED settings back to config.yaml
-    c = get_config()
-    c.setdefault("led", {})
-    c["led"]["enabled"] = bool(led.enabled)
-    c["led"]["brightness"] = float(led.brightness)
-    c["led"]["anim"] = str(led.anim)
-    c["led"]["speed"] = float(getattr(led, "_speed", 10.0))
-    c["led"]["color"] = str(getattr(led, "color_hex", "#FFFFFF"))
-    save_config(c)
-
-@app.route("/api/led/state")
-def led_state():
-    return {
-        "enabled": bool(led.enabled),
-        "brightness": float(led.brightness),
-        "anim": str(led.anim),
-        "speed": float(getattr(led, "_speed", 10.0)),
-        "color": str(getattr(led, "color_hex", "#FFFFFF")),
     }
 
-@app.route("/api/led/apply", methods=["POST"])
-def led_apply():
-    data = request.get_json(force=True, silent=True) or {}
-    if "enabled" in data: led.set_enabled(bool(data["enabled"]))
-    if "brightness" in data: led.set_brightness(float(data["brightness"]))
-    if "speed" in data: led.set_speed(float(data["speed"]))
-    if "color" in data: led.set_color(str(data["color"]))
-    if "anim" in data: led.anim = str(data["anim"])
-    _persist_led_to_cfg()
-    return {"ok": True, **led_state()}
+    # Battery
+    if battery and hasattr(battery, "get_state"):
+        try:
+            b = battery.get_state()
+            if isinstance(b, dict):
+                data["battery"] = {"percent": b.get("percent"), "voltage": b.get("voltage")}
+        except Exception as e:
+            print("[Battery] error:", e)
+
+    # Distance
+    cm = None; mm = None; m = None
+    try:
+        if distance:
+            if hasattr(distance, "get_state"):
+                ds = distance.get_state() or {}
+                mm = ds.get("mm"); cm = ds.get("cm"); m = ds.get("m")
+            if mm is None and hasattr(distance, "read_mm"): mm = distance.read_mm()
+            if cm is None and hasattr(distance, "read_cm"): cm = distance.read_cm()
+            if m  is None and hasattr(distance, "read_m"):  m  = distance.read_m()
+    except Exception as e:
+        print("[Distance] error:", e)
+
+    if isinstance(mm, (int, float)): data["distance_mm"] = int(mm)
+    if isinstance(cm, (int, float)): data["distance_cm"] = float(cm)
+
+    if isinstance(m, (int, float)):
+        data["distance_m"] = round(float(m), 2)
+    elif isinstance(m, str):
+        data["distance_m"] = m
+    else:
+        if isinstance(cm, (int, float)):
+            mv = cm / 100.0
+            data["distance_m"] = mv if mv <= 4.0 else ">4.0"
+        else:
+            data["distance_m"] = None
+
+    return jsonify(data)
 
 @app.route("/api/debug/distance")
-def _dbg_dist():
-    dr=DistanceReader(cfg); mm=dr.read_mm()
-    return {"addr": ("0x%02X" % getattr(dr, "addr", 0x29)), "mm": mm, "cm": (None if mm is None else round(mm/10.0,1)), "backend": getattr(dr,"backend",None), "last_error": getattr(dr,"last_error",None)}
+def api_debug_distance():
+    res = {"backend": None, "mm": None, "cm": None, "m": None, "last_error": None}
+    try:
+        if distance and hasattr(distance, "get_state"):
+            d = distance.get_state() or {}
+            res.update({
+                "mm": d.get("mm"),
+                "cm": d.get("cm"),
+                "m":  d.get("m"),
+                "backend": d.get("backend"),
+                "last_error": d.get("last_error"),
+            })
+        else:
+            if distance and hasattr(distance, "read_mm"):
+                res["mm"] = distance.read_mm()
+            if distance and hasattr(distance, "read_cm"):
+                res["cm"] = distance.read_cm()
+            if distance and hasattr(distance, "read_m"):
+                res["m"] = distance.read_m()
+    except Exception as e:
+        res["last_error"] = str(e)
+    return jsonify(res)
 
-@app.route("/api/debug/battery")
-def _dbg_batt():
-    br=BatteryReader(cfg); r=br.read() or {}
-    return {"addr": hex(getattr(br,"addr",0x43)), **r}
+@app.route("/api/led/state")
+def api_led_state():
+    try:
+        if led and hasattr(led, "get_state"):
+            return jsonify(led.get_state())
+    except Exception as e:
+        print("[LED] state error:", e)
+        return jsonify({"error": str(e)}), 500
+    return jsonify({})
 
-if __name__ == "__main__":
+@app.route("/api/led/apply", methods=["POST"])
+def api_led_apply():
+    try:
+        body = request.get_json(force=True, silent=True) or {}
+        if led and hasattr(led, "apply_state"):
+            led.apply_state(body)
+        return jsonify({"ok": True, "applied": body})
+    except Exception as e:
+        print("[LED] apply error:", e)
+        return jsonify({"ok": False, "error": str(e)}), 400
+
+@app.route("/api/start_mode", methods=["POST"])
+def api_start_mode():
+    try:
+        mode = (request.get_json(silent=True) or {}).get("mode", "reversing")
+        if camera and hasattr(camera, "start_reversing") and hasattr(camera, "start_surveillance"):
+            camera.start_reversing() if mode == "reversing" else camera.start_surveillance()
+        return jsonify({"ok": True, "started": mode})
+    except Exception as e:
+        print("[Camera] start error:", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+def _run_flask():
+    host = os.environ.get("HOST", "0.0.0.0")
+    port = int(os.environ.get("PORT", "8080"))
+    print(f"[Startup] Flask server on {host}:{port}")
+    app.run(host=host, port=port, debug=False, threaded=True)
+
+def _run_gevent():
+    host = os.environ.get("HOST", "0.0.0.0")
+    port = int(os.environ.get("PORT", "8080"))
     try:
         from gevent.pywsgi import WSGIServer
-        print("Serving with gevent on http://0.0.0.0:8080")
-        WSGIServer(("0.0.0.0",8080), app).serve_forever()
+        print(f"[Startup] gevent WSGI on {host}:{port}")
+        WSGIServer((host, port), app).serve_forever()
     except Exception as e:
-        print("[Startup] gevent failed, using Flask:", e)
-        app.run(host="0.0.0.0", port=8080)
+        print("[Startup] gevent unavailable, falling back to Flask:", e)
+        _run_flask()
+
+def main():
+    if os.environ.get("USE_FLASK", "0") == "1":
+        _run_flask()
+    else:
+        _run_gevent()
+
+if __name__ == "__main__":
+    main()

@@ -1,21 +1,9 @@
 distance:
-  addr: '0x29'
   enabled: true
-  max_cm: 150
-  min_cm: 10
-  warn_freq_max_hz: 20
-  warn_freq_min_hz: 1
-led:
-  anim: rainbow
-  brightness: 0.4
-  color: '#d19d01'
-  count: 16
-  enabled: true
-  gpio_pin: 12
-  speed: 1.0
+  addr: 0x29
+battery:
+  addr: 0x43
+server:
+  host: 0.0.0.0
+  port: 8080
 mode: reversing
-ups:
-  battery_max_v: 4.2
-  battery_min_v: 3.0
-  enabled: true
-  ina219_addr: '0x43'

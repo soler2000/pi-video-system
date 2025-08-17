@@ -1,65 +1,41 @@
-<!doctype html><html lang="en"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Pi Video — Reversing</title><link rel="stylesheet" href="/static/app.css">
+<!doctype html>
+<html><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Reversing Cam</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
 <style>
-body{margin:0;background:#000}
-.toolbar{position:sticky;top:0;display:flex;gap:.5rem;align-items:center;padding:.6rem .75rem;background:rgba(12,15,22,.9);border-bottom:1px solid #101826}
-.badge{display:inline-block;padding:.2rem .55rem;border-radius:.5rem;background:#0a1020;color:#9fb5ff;border:1px solid #1e2b4a}
-.badge.ok{color:#9fffb0;border-color:#2b4a34;background:#0b1a12}
-.video-wrap{position:fixed;inset:44px 0 0 0;background:#000}
-.video-wrap video{width:100%;height:100%;object-fit:contain;background:#000}
-.overlay{position:absolute;left:8px;bottom:8px;color:#00ff88;padding:6px 8px;background:rgba(0,0,0,.35);border-radius:8px;font-family:ui-monospace,monospace;font-size:.9rem}
-</style></head>
-<body>
-  <div class="toolbar">
-    <a href="/" class="btn">Dashboard</a>
-    <span id="s" class="badge">checking…</span>
+#overlay { position:absolute; top:12px; left:12px; font-size:1.25em; } /* +25% */
+#wrap { position:relative; }
+video { width:100vw; height:100vh; object-fit:cover; background:#000; }
+.badge { padding:2px 6px; border-radius:6px; background:#333; color:#fff; }
+.badge.ok { background:#14b86a; }
+</style>
+</head><body>
+<div id="wrap">
+  <video id="v" autoplay muted playsinline controls></video>
+  <div id="overlay">
+    <span id="s" class="badge">connecting…</span>
+    <span id="d" class="badge">— m</span>
   </div>
-  <div class="video-wrap">
-    <video id="v" autoplay playsinline muted></video>
-    <div class="overlay" id="ovl">
-      Distance: <span id="d">--</span> • seq: <span id="seq">--</span>
-      • <button id="forceHls" class="badge" type="button">Use HLS</button>
-    </div>
-  </div>
+</div>
 <script>
-let pc=null; let statusEl=null;
-function iceGatheringComplete(p){ if(p.iceGatheringState==="complete") return Promise.resolve();
-  return new Promise(res=>{ const t=setTimeout(()=>res(),2500);
-  const on=()=>{ if(p.iceGatheringState==="complete"){ p.removeEventListener("icegatheringstatechange",on); clearTimeout(t); res(); } };
-  p.addEventListener("icegatheringstatechange",on); }); }
-async function useHls(){
-  const v=document.getElementById('v');
-  const js = await fetch('/api/stats?t='+Date.now(), {cache:'no-store'}).then(r=>r.json()).catch(()=>({}));
-  const hlsUrl = js.hls || '/reversing/index.m3u8';
-  if(v.canPlayType('application/vnd.apple.mpegurl')) v.src=hlsUrl;
-  else { const s=document.createElement('script'); s.src='https://cdn.jsdelivr.net/npm/hls.js@latest';
-         s.onload=()=>{ const h=new Hls({lowLatencyMode:true}); h.loadSource(hlsUrl); h.attachMedia(v); };
-         document.body.appendChild(s); }
-  if(statusEl){ statusEl.textContent='live (HLS)'; statusEl.className='badge ok'; }
-}
-async function start(){
-  statusEl=document.getElementById('s');
-  try {
-    statusEl.textContent="connecting (WebRTC)…";
-    pc = new RTCPeerConnection({iceServers:[], bundlePolicy:"max-bundle"});
-    pc.addTransceiver("video", {direction:"recvonly"});
-    pc.ontrack = ev => { const v=document.getElementById('v'); v.srcObject=ev.streams[0]; v.play().catch(()=>{}); };
-    const offer = await pc.createOffer(); await pc.setLocalDescription(offer); await iceGatheringComplete(pc);
-    const r = await fetch('/whep/reversing', { method:'POST', headers:{'Content-Type':'application/sdp'}, body: pc.localDescription.sdp });
-    if(!r.ok) throw new Error('WHEP HTTP '+r.status);
-    const answer = await r.text(); await pc.setRemoteDescription({type:'answer', sdp: answer});
-    statusEl.textContent='live (WebRTC)'; statusEl.className='badge ok';
-  } catch(e) { console.log('WebRTC failed, fallback to HLS', e); await useHls(); }
-}
-async function pollStats(){
+(async function(){
+  const v=document.getElementById('v'); const s=document.getElementById('s'); const d=document.getElementById('d');
+  async function updateD(){
+    try{
+      const j=await (await fetch('/api/stats?ts='+Date.now(),{cache:'no-store'})).json();
+      let m=j.distance_m;
+      if(typeof m==='number') d.textContent=m.toFixed(2)+' m';
+      else if(typeof m==='string') d.textContent=m+' m';
+      else d.textContent='— m';
+    }catch(e){}
+  }
+  setInterval(updateD, 500); updateD();
   try{
-    const js = await fetch('/api/stats?t='+Date.now(), {cache:'no-store'}).then(r=>r.json());
-    document.getElementById('d').textContent = (js.distance_cm!=null ? Number(js.distance_cm).toFixed(1)+' cm' : '--');
-    document.getElementById('seq').textContent = js.seq ?? '--';
-  }catch(e){}
-}
-document.getElementById('forceHls').onclick=useHls;
-start(); setInterval(pollStats, 1000); pollStats();
+    const j=await (await fetch('/api/stats')).json();
+    s.textContent='live (HLS)'; s.className='badge ok';
+    v.src=j.hls; v.play().catch(()=>{});
+  }catch(e){ s.textContent='error'; }
+})();
 </script>
 </body></html>

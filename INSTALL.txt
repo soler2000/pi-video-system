@@ -1,0 +1,21 @@
+Pi Video System 1.5.3 (clean)
+
+1) Extract and install
+   # Option A (home):
+   unzip ~/Downloads/pi-video-system-1.5.3.zip -d ~/pi-video-system-1.5.3
+   cd ~/pi-video-system-1.5.3
+   chmod +x install.sh
+   bash ./install.sh
+
+   # Option B (/opt):
+   sudo mkdir -p /opt/pi-video-system-1.5.3
+   sudo unzip ~/Downloads/pi-video-system-1.5.3.zip -d /opt/pi-video-system-1.5.3
+   cd /opt/pi-video-system-1.5.3
+   sudo chmod +x install.sh
+   bash ./install.sh
+
+2) Logs
+   journalctl -u motion_wide.service -n 80 --no-pager
+
+3) Reset (optional)
+   ./reset.sh

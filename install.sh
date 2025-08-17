@@ -1,27 +1,85 @@
 #!/usr/bin/env bash
 set -euo pipefail
-export DEBIAN_FRONTEND=noninteractive
-SRCDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-APPROOT="/opt/pi-video-system"
-RELEASES="$APPROOT/releases"
-CURRENT_LINK="$APPROOT/current"
-VENV="$APPROOT/.venv"
-case "$SRCDIR" in "$APPROOT"|"$APPROOT"/*) echo "ERROR: Do not run install.sh from inside $APPROOT."; exit 1;; esac
-echo "[1/12] Stop service"; sudo systemctl stop motion_wide.service || true
-echo "[2/12] Apt deps + enable I2C"
-sudo apt-get update -y
-sudo apt-get install -y python3-venv python3-dev build-essential pkg-config libffi-dev libssl-dev libatlas-base-dev i2c-tools rsync curl git
-if ! grep -q '^dtparam=i2c_arm=on' /boot/firmware/config.txt 2>/dev/null; then echo 'dtparam=i2c_arm=on' | sudo tee -a /boot/firmware/config.txt; fi
-sudo modprobe i2c-dev || true
-STAMP="$(date +%Y%m%d-%H%M%S)"; STAGE="$(mktemp -d /tmp/pivs.stage.XXXXXX)"; NEWREL="$RELEASES/$STAMP"; trap 'rm -rf "$STAGE" || true' EXIT
-echo "[3/12] Stage source to $STAGE"; rsync -a --delete --exclude '.venv' "$SRCDIR/" "$STAGE/"
-echo "[4/12] Copy staged → $NEWREL"; sudo mkdir -p "$RELEASES"; sudo rsync -a --delete "$STAGE/" "$NEWREL/"
-echo "[5/12] Preserve existing config.yaml"; if [[ -f "$APPROOT/config/config.yaml" ]]; then sudo mkdir -p "$NEWREL/config"; sudo cp "$APPROOT/config/config.yaml" "$NEWREL/config/config.yaml"; echo "  - preserved config.yaml"; fi
-echo "[6/12] Ensure required subfolders"; sudo mkdir -p "$NEWREL"/{app,app/templates,app/static,config,systemd,tools}
-echo "[7/12] Create/upgrade venv at $VENV"; if [[ ! -d "$VENV" ]]; then sudo python3 -m venv "$VENV"; fi; sudo "$VENV/bin/python" -m pip install --upgrade pip setuptools wheel
-echo "[8/12] pip install requirements into venv"
-if ! sudo "$VENV/bin/python" -m pip install -r "$NEWREL/requirements.txt"; then echo "  - retry after clearing pip cache…"; sudo rm -rf /root/.cache/pip || true; sudo "$VENV/bin/python" -m pip install -r "$NEWREL/requirements.txt"; fi
-echo "[9/12] Install/refresh systemd unit"; sudo install -m 0644 "$NEWREL/systemd/motion_wide.service" /etc/systemd/system/motion_wide.service; sudo systemctl daemon-reload; sudo systemctl enable motion_wide.service
-echo "[10/12] Switch /opt/pi-video-system/current → new release"; sudo mkdir -p "$APPROOT"; TMP_LINK="$(mktemp -u /tmp/pivs.link.XXXXXX)"; sudo ln -sfn "$NEWREL" "$TMP_LINK"; sudo mv -Tf "$TMP_LINK" "$CURRENT_LINK"
-echo "[11/12] Permissions + start"; sudo chown -R root:root "$APPROOT"; sudo find "$APPROOT" -type d -exec chmod 755 {} \; >/dev/null 2>&1 || true; sudo find "$APPROOT" -type f -exec chmod 644 {} \; >/dev/null 2>&1 || true; sudo chmod 755 "$APPROOT" "$VENV" "$VENV/bin" || true; sudo systemctl restart motion_wide.service
-echo "[12/12] Health checks"; sleep 1; systemctl --no-pager --full status motion_wide.service | tail -n 40 || true; echo; echo "Active release: $(readlink -f "$CURRENT_LINK")"; echo "pip:"; sudo "$VENV/bin/python" -m pip -V; echo; echo "Stats:"; curl -s http://localhost:8080/api/stats || true; echo; echo "Open http://<PI-IP>:8080/?v=1"
+
+APP_ROOT="/opt/pi-video-system"
+RELEASES="$APP_ROOT/releases"
+UNIT="motion_wide.service"
+TS="$(date +%Y%m%d-%H%M%S)"
+WORKDIR="$(mktemp -d /tmp/pivs-inst.XXXXXX)"
+trap 'rm -rf "$WORKDIR" || true' EXIT
+
+echo "[1/11] Preparing target layout"
+sudo mkdir -p "$APP_ROOT" "$RELEASES" "$APP_ROOT/config" "$APP_ROOT/media" "$APP_ROOT/logs"
+sudo chown -R "$USER:$USER" "$APP_ROOT"
+
+echo "[2/11] Stop service if running"
+if systemctl list-unit-files | grep -q "^$UNIT"; then
+  sudo systemctl stop "$UNIT" || true
+fi
+
+echo "[3/11] Stage this bundle into temp (exclude runtime dirs)"
+rsync -a --delete --exclude='.venv/' --exclude='releases/' --exclude='media/' --exclude='logs/' ./ "$WORKDIR/"
+
+echo "[4/11] Remove old releases (as requested)"
+rm -rf "$RELEASES" || true
+mkdir -p "$RELEASES"
+
+echo "[5/11] Create new release dir"
+TARGET="$RELEASES/$TS"
+mkdir -p "$TARGET"
+rsync -a --delete "$WORKDIR/"/ "$TARGET/"
+
+echo "[6/11] Preserve or install config.yaml"
+if [ -f "$APP_ROOT/config/config.yaml" ]; then
+  echo "  - keeping existing config.yaml in $APP_ROOT/config"
+else
+  mkdir -p "$APP_ROOT/config"
+  cp -a "$TARGET/config/config.yaml" "$APP_ROOT/config/config.yaml"
+  echo "  - installed default config.yaml"
+fi
+
+echo "[7/11] Python venv (PEP 668 safe) + deps"
+if [ ! -x "$APP_ROOT/.venv/bin/python" ]; then
+  sudo apt-get update -y
+  sudo apt-get install -y python3-venv python3-dev build-essential
+  python3 -m venv "$APP_ROOT/.venv"
+fi
+"$APP_ROOT/.venv/bin/pip" install --upgrade pip setuptools wheel
+# Use piwheels first, PyPI as fallback
+"$APP_ROOT/.venv/bin/pip" install \
+  --index-url https://www.piwheels.org/simple \
+  --extra-index-url https://pypi.org/simple \
+  -r "$TARGET/requirements.txt"
+
+echo "[8/11] Systemd unit"
+sudo tee /etc/systemd/system/$UNIT >/dev/null <<UNIT
+[Unit]
+Description=Pi Video System (Flask + sensors)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=$APP_ROOT/current
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=HOST=0.0.0.0
+Environment=PORT=8080
+Environment=USE_FLASK=1
+ExecStart=$APP_ROOT/.venv/bin/python -m app.web
+Restart=on-failure
+User=pi
+Group=pi
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+echo "[9/11] Flip current -> new release"
+ln -sfn "$TARGET" "$APP_ROOT/current"
+
+echo "[10/11] Reload + enable + restart"
+sudo systemctl daemon-reload
+sudo systemctl enable $UNIT
+sudo systemctl restart $UNIT
+
+echo "[11/11] Done. Deployed to $TARGET"

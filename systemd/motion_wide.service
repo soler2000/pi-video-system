@@ -6,11 +6,14 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/opt/pi-video-system/current
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=HOST=0.0.0.0
+Environment=PORT=8080
+Environment=USE_FLASK=1
 ExecStart=/opt/pi-video-system/.venv/bin/python -m app.web
-Restart=always
-RestartSec=2
-User=root
-Environment=PYTHONUNBUFFERED=1
+Restart=on-failure
+User=pi
+Group=pi
 
 [Install]
 WantedBy=multi-user.target
