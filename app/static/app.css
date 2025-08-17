@@ -1,0 +1,6 @@
+body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,'Helvetica Neue',Arial;color:#cdd9e5;background:#0b1220;margin:0}
+.top{display:flex;gap:.5rem;padding:.6rem .75rem;border-bottom:1px solid #101826;background:#0e1726;position:sticky;top:0}
+.btn{display:inline-block;padding:.45rem .7rem;background:#13223a;border:1px solid #1e2b4a;border-radius:.5rem;color:#cdd9e5;text-decoration:none}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:.8rem;padding:1rem}
+.card{background:#0e1726;border:1px solid #16233e;border-radius:.6rem;padding:.9rem}
+.stat{font-size:1.5rem}

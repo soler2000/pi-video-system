@@ -1,0 +1,19 @@
+mode: reversing
+distance:
+  enabled: true
+  addr: "0x29"
+  min_cm: 10
+  max_cm: 150
+  warn_freq_min_hz: 1
+  warn_freq_max_hz: 20
+ups:
+  enabled: true
+  ina219_addr: "0x43"
+  battery_min_v: 3.0
+  battery_max_v: 4.2
+led:
+  enabled: true
+  gpio_pin: 12
+  count: 16
+  brightness: 0.4
+  anim: "off"

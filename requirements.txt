@@ -1,0 +1,10 @@
+Flask==3.0.3
+gevent==24.2.1
+psutil==5.9.8
+smbus2==0.4.3
+requests==2.32.3
+rpi_ws281x==5.0.0
+adafruit-blinka==8.46.0
+adafruit-circuitpython-vl6180x==1.4.18
+adafruit-circuitpython-vl53l0x==3.6.16
+PyYAML==6.0.2
